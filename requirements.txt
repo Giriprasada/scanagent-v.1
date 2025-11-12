@@ -8,6 +8,5 @@ python-nmap==0.7.1
 python-gvm==26.2.0
 lxml==5.4.0
 python-dotenv==1.1.0
-ping3==4.0.4
 tenacity==8.2.3
 ipaddress==1.0.23
