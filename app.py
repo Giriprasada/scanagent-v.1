@@ -44,12 +44,13 @@ class ScanAgent:
                 ip_range = data.get('ip_range', '').strip() # Data from Server
                 server_url  = data.get('central_server_url', '').strip()
                 self.agent_ip=data.get('agent_ip', '').strip()
-                process_mode = 'auto' if not ip_range else 'manual' # Data from Server (IP range empty or any specific)
-                
+                process_mode=data.get('mode','manual').strip()
+                # process_mode = 'auto' if mode else 'manual' # Data from Server (IP range empty or any specific)
+                if not ip_range:
+                    return jsonify({"error": "Missing ip_range to scan"}), 400
                 if not server_url or not self.agent_ip:
                     return jsonify({"error": "Missing server_url or agent_ip"}), 400
-
-                print(f"Scan type {scan_type} ip range is {ip_range} process mode is {process_mode} type is {scan_type}")
+                self.logger.info(f"Scan type {scan_type} ip range is {ip_range} process mode is {process_mode} type is {scan_type}")
                 
                 if scan_type not in ['nmap', 'openvas']: 
                     return jsonify({"error": "Invalid scan_type. Must be 'nmap' or 'openvas'"}), 400
@@ -87,41 +88,41 @@ class ScanAgent:
                 "timestamp": time.time()
             })
 
-    def get_real_interfaces(self) -> Optional[Dict[str, list]]:
-        """
-        Get real physical interfaces like Ethernet/Wi-Fi with valid IPv4 CIDRs.
-        Returns: dict {interface_name: [CIDRs]} or None
-        """
-        cidrs_by_interface = {}
+    # def get_real_interfaces(self) -> Optional[Dict[str, list]]:
+    #     """
+    #     Get real physical interfaces like Ethernet/Wi-Fi with valid IPv4 CIDRs.
+    #     Returns: dict {interface_name: [CIDRs]} or None
+    #     """
+    #     cidrs_by_interface = {}
 
-        try:
-            interfaces = psutil.net_if_addrs()
+    #     try:
+    #         interfaces = psutil.net_if_addrs()
 
-            for iface_name, addresses in interfaces.items():
-                if any(skip in iface_name.lower() for skip in ["loopback", "bluetooth", "vethernet", "virtual", "wsl", "docker", "hyper-v"]):
-                    continue
+    #         for iface_name, addresses in interfaces.items():
+    #             if any(skip in iface_name.lower() for skip in ["loopback", "bluetooth", "vethernet", "virtual", "wsl", "docker", "hyper-v"]):
+    #                 continue
 
-                cidrs = []
-                for addr in addresses:
-                    if addr.family == socket.AF_INET and addr.address and addr.netmask:
-                        ip = ipaddress.IPv4Address(addr.address)
-                        if ip.is_loopback or ip.is_link_local or ip.is_multicast:
-                            continue
-                        try:
-                            network = ipaddress.IPv4Network(f"{addr.address}/{addr.netmask}", strict=False)
-                            cidrs.append(f"{network.network_address}/{network.prefixlen}")
-                        except Exception:
-                            continue
+    #             cidrs = []
+    #             for addr in addresses:
+    #                 if addr.family == socket.AF_INET and addr.address and addr.netmask:
+    #                     ip = ipaddress.IPv4Address(addr.address)
+    #                     if ip.is_loopback or ip.is_link_local or ip.is_multicast:
+    #                         continue
+    #                     try:
+    #                         network = ipaddress.IPv4Network(f"{addr.address}/{addr.netmask}", strict=False)
+    #                         cidrs.append(f"{network.network_address}/{network.prefixlen}")
+    #                     except Exception:
+    #                         continue
 
-                if cidrs:
-                    cidrs_by_interface[iface_name] = cidrs
-            # print("cidrs : " ,cidrs_by_interface) #....................................debuging
+    #             if cidrs:
+    #                 cidrs_by_interface[iface_name] = cidrs
+    #         # print("cidrs : " ,cidrs_by_interface) #....................................debuging
 
-            return cidrs_by_interface if cidrs_by_interface else None
+    #         return cidrs_by_interface if cidrs_by_interface else None
 
-        except Exception as e:
-            self.logger.error(f"Error getting interfaces: {e}")
-            return None
+    #     except Exception as e:
+    #         self.logger.error(f"Error getting interfaces: {e}")
+    #         return None
 
     def send_result_to_server(self, result_data: Dict ,server_url: str):
         """Send scan results back to the centralized server."""
@@ -188,77 +189,31 @@ class ScanAgent:
         Auto mode scans all CIDRs from real interfaces.
         Manual mode scans the provided CIDR/IP range.
         """
+   
+
         try:
-            self.logger.info(f"Starting scan: type={scan_type}, mode={process_mode}")
+            self.logger.info(f"Scanning provided range: {ip_range}")
+            result = self.perform_single_scan(scan_type, ip_range)
+            status_payload = self.send_scan_result(
+                scan_type=scan_type,
+                agent_ip=self.agent_ip,
+                cidr=ip_range,
+                result=result,
+                mode=process_mode,
+                report_type="scan_data",
+                server_url=server_url
+                )
             
-
-            if process_mode == 'auto':
-                interfaces = self.get_real_interfaces()
-                if not interfaces:
-                    raise RuntimeError("No valid CIDRs found on any interface")
-
-
-                overall_success = True
-                scan_results = []
-
-                for iface, cidr_list in interfaces.items():
-                    for cidr in cidr_list:
-                        self.logger.info(f"Scanning CIDR {cidr} on interface {iface}")
-                        result = self.perform_single_scan(scan_type, cidr)
-
-                        status_payload = self.send_scan_result(
-                            scan_type=scan_type,
-                            agent_ip=self.agent_ip,
-                            cidr=cidr,
-                            result=result,
-                            mode="auto",
-                            report_type="scan_data",
-                            server_url=server_url
-                            )
-                        
-                        if status_payload["status"] == "scan_failed":
-                            overall_success = False
-
-                        
-
-                        scan_results.append(status_payload) # cidr ,status dict
-
-                # Send final summary
-                final_status = "scan_completed" if overall_success else "scan_failed"
-                self.send_result_to_server({
-                    "status": final_status,
-                    "report":"final_summary",
-                    "agent_ip":  self.agent_ip,
-                    "scan_type": scan_type,
-                    "mode": "auto",
-                    "timestamp": time.time(),
-                    "summary": scan_results
-                },server_url)        
-
-            else:
-                self.logger.info(f"Scanning provided range: {ip_range}")
-                result = self.perform_single_scan(scan_type, ip_range)
-
-                status_payload = self.send_scan_result(
-                    scan_type=scan_type,
-                    agent_ip=self.agent_ip,
-                    cidr=ip_range,
-                    result=result,
-                    mode="manual",
-                    report_type="scan_data",
-                    server_url=server_url
-                    )
-                
-                
-                # final Summary
-                self.send_result_to_server({
-                "status": status_payload["status"],
-                "report": "final_summary",
-                "agent_ip": self.agent_ip,
-                "scan_type": scan_type,
-                "mode": "manual",
-                "timestamp": time.time(),
-                "summary": [status_payload]
+            
+            # final Summary
+            self.send_result_to_server({
+            "status": status_payload["status"],
+            "report": "final_summary",
+            "agent_ip": self.agent_ip,
+            "scan_type": scan_type,
+            "mode": process_mode,
+            "timestamp": time.time(),
+            "summary": [status_payload]
             },server_url)
 
         except Exception as e:
