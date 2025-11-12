@@ -1,0 +1,63 @@
+//ubuntu 
+# Update package index
+sudo apt update
+
+# Install prerequisite packages
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common gnupg lsb-release
+
+# Add Docker’s official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Optional: allow running Docker without sudo
+sudo usermod -aG docker $USER
+newgrp docker
+
+#check
+docker --version
+docker ps
+
+
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo systemctl status docker
+
+#openvas 
+docker pull immauss/openvas
+
+docker run -d \
+  --name openvas \
+  -p 9390:9390 \
+  -p 443:9392 \
+  immauss/openvas
+
+#check logs optional
+  docker ps
+docker logs -f openvas
+
+# Optional: Auto-start OpenVAS daily (systemd service)
+sudo nano /etc/systemd/system/openvas.service
+Add
+[Unit]
+Description=OpenVAS Docker container
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker start -a openvas
+ExecStop=/usr/bin/docker stop -t 2 openvas
+
+[Install]
+WantedBy=multi-user.target
+
+sudo systemctl daemon-reload
+sudo systemctl enable openvas
+sudo systemctl start openvas
+sudo systemctl status openvas
