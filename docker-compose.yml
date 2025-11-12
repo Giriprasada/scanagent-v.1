@@ -3,7 +3,7 @@ version: '3.8'
 services:
   scan-agent:
     build: .
-    container_name: scan-agent-zonal
+    container_name: scan-agent
     restart: unless-stopped
     network_mode: "host"       # <-- keep host mode
     volumes:
@@ -11,7 +11,7 @@ services:
     environment:
       - FLASK_APP=app.py
       - FLASK_ENV=development
-      - HOST_IP=192.168.10.11
+      # - HOST_IP=192.168.10.11
     depends_on:
       - openvas
 
@@ -22,7 +22,7 @@ services:
     ports:
       - "9390:9390"
       - "9392:9392"
-      - "9390:9392"
+      - "443:9392"
     cap_add:
       - NET_ADMIN
     environment:
@@ -31,7 +31,7 @@ services:
     volumes:
       - openvas_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9392/"]
+      test: ["CMD", "curl", "-f", "http://localhost:443/"]
       interval: 30s
       timeout: 10s
       retries: 3
