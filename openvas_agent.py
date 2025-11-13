@@ -35,7 +35,7 @@ class OpenVASScanner:
             'scan_config': 'Full and fast',  
             'port_list_name': 'All IANA assigned TCP and UDP',  
             'max_concurrent_tasks': 10, 
-            'batch_size': 1,  
+            'batch_size': 5,  
             'ping_timeout': 2.0  
         }
 
