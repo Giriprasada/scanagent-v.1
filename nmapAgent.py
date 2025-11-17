@@ -4,6 +4,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from agent_logger import Logger
 import json
 import os
+
+# Hardcoded list of IPs to avoid during scanning
+BLOCKED_HOST_IPS = {
+    "192.168.40.1",
+    "172.16.16.16",
+    "192.168.30.1",
+    "192.168.30.9",
+    "172.16.16.17",
+    "192.168.40.8",
+}
 class NetworkScanner:
     def __init__(self):
         """Initialize the NetworkScanner with Nmap PortScanner."""
@@ -35,6 +45,18 @@ class NetworkScanner:
         self.nm.scan(hosts=network, arguments='-sn')  # Ping scan to find active hosts
         active_hosts = [host for host in self.nm.all_hosts() if self.nm[host].state() == 'up']
         self.logger.info(f"Found {len(active_hosts)} active hosts.")
+
+        # Remove any blocked/ignored IPs from the active list------------------------HARDCODING-------------------------------
+        filtered_active_hosts = [ip.strip() for ip in active_hosts if ip.strip() and ip.strip() not in BLOCKED_HOST_IPS]
+        removed_count = len(active_hosts) - len(filtered_active_hosts)
+        if removed_count > 0:
+            self.logger.info(f"Removed {removed_count} blocked IP(s) from active host list: {sorted(list(BLOCKED_HOST_IPS))}")
+
+        active_hosts = filtered_active_hosts
+        if not active_hosts:
+            self.logger.error("No active hosts left to scan after applying blocked IP filter")
+            return
+        # ------------------------HARDCODING-------------------------------
 
         self.scan_results = {}  # Store all scanned host data ip as key
 

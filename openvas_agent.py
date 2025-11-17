@@ -16,6 +16,19 @@ from io import BytesIO
 import nmap
 from dotenv import load_dotenv
 
+# Hardcoded list of IPs to avoid during scanning
+BLOCKED_HOST_IPS = {
+    "192.168.40.1",
+    "172.16.16.16",
+    "192.168.30.1",
+    "192.168.30.9",
+    "172.16.16.17",
+    "192.168.40.8",
+    "192.168.10.6",
+    "192.168.10.9",
+    "192.168.10.11"
+}
+
 class OpenVASScanner:
     """A class to manage OpenVAS vulnerability scanning operations, including target validation, host discovery, and report processing."""
 
@@ -28,7 +41,7 @@ class OpenVASScanner:
         os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
 
         self.config = {
-            'host': os.getenv('OPENVAS_HOST', 'localhost'),  
+            'host': os.getenv('OPENVAS_HOST', '192.168.10.11'),  
             'port': int(os.getenv('OPENVAS_PORT', 9390)),  
             'username': os.getenv('OPENVAS_USERNAME', 'admin'),  
             'password': os.getenv('OPENVAS_PASSWORD', 'admin'),  
@@ -166,6 +179,18 @@ class OpenVASScanner:
                 self.logger.error("No active hosts found")
                 return {}
 
+            # Remove any blocked/ignored IPs from the active list--------------------------HARDCODING
+            filtered_active_ips = [ip.strip() for ip in active_ips if ip.strip() and ip.strip() not in BLOCKED_HOST_IPS]
+            removed_count = len(active_ips) - len(filtered_active_ips)
+            if removed_count > 0:
+                self.logger.info(f"Removed {removed_count} blocked IP(s) from active host list: {sorted(list(BLOCKED_HOST_IPS))}")
+
+            active_ips = filtered_active_ips
+            if not active_ips:
+                self.logger.error("No active hosts left to scan after applying blocked IP filter")
+                return {}
+# --------------------------HARDCODING-----------------------------------------------------
+            
             batch_size = self.config['batch_size']
             ip_batches = [active_ips[i:i + batch_size] for i in range(0, len(active_ips), batch_size)]
             self.logger.info(f"Scanning {len(active_ips)} active IPs in {len(ip_batches)} batches of {batch_size}")
