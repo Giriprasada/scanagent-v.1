@@ -29,7 +29,7 @@ class NetworkScanner:
         """Perform an Nmap scan on the specified network range."""
         self.logger.info(f"Starting network scan on {network_range}...")
         try:
-            self.nm.scan(hosts=network_range, arguments='-T4 -A -sS')
+            self.nm.scan(hosts=network_range, arguments='-T4 -A -sS -p-')
             self.logger.info("Scan completed.")
             # chnages return scanned hosts dATA
             return self.nm[network_range] 
