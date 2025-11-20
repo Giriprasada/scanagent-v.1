@@ -48,7 +48,7 @@ class OpenVASScanner:
             'scan_config': 'Full and fast',  
             'port_list_name': 'All IANA assigned TCP and UDP',  
             'max_concurrent_tasks': 10, 
-            'batch_size': 5,  
+            'batch_size': 1,  
             'ping_timeout': 2.0  
         }
 
@@ -456,6 +456,7 @@ class OpenVASScanner:
         }
         
         for report_id, ip_batch in zip(report_ids, target_ip_batches):
+            # real_ip = ip_batch[0]
             if isinstance(report_id, Exception):
                 self.logger.error(f"Skipping report for IPs {ip_batch}: Exception occurred - {report_id}")
                 continue
@@ -500,16 +501,11 @@ class OpenVASScanner:
         return network_data
 
     def parse_xml_report(self, xml_content: str, target_ips: List[str]) -> Optional[Dict]:
-        """Parse an OpenVAS XML report, extracting details for specified IPs.
+        """Parse an OpenVAS XML report, mapping all results to the real target IP."""
 
-        Args:
-            xml_content (str): XML content of the report
-            target_ips (List[str]): List of target IP addresses
-
-        Returns:
-            Optional[Dict]: Parsed report data or None if parsing fails
-        """
         try:
+            real_ip = target_ips[0]  # Always the real IP for this batch
+
             parsed_data = {
                 'scan_info': {},
                 'hosts': {},
@@ -520,55 +516,57 @@ class OpenVASScanner:
                     'total_cves': set()
                 }
             }
-            
+
+            # Parse XML
             try:
-                root = etree.fromstring(xml_content.encode('utf-8'))  # Parse XML content
+                root = etree.fromstring(xml_content.encode('utf-8'))
             except etree.XMLSyntaxError as e:
                 self.logger.error(f"Failed to parse XML: {e}")
                 return None
-            
+
             report = root.find('.//report')
             if report is None:
-                self.logger.error("No report element found in XML")
+                self.logger.error("No <report> element found in XML")
                 return None
-                
-            # print(f"[*] Parsing XML report for IPs: {target_ips}")
-            
-            # Extract scan metadata
+
+            # Scan metadata
             parsed_data['scan_info'] = {
                 'scan_start': report.findtext('.//scan_start', 'N/A'),
                 'scan_end': report.findtext('.//scan_end', 'N/A'),
-                'total_hosts': len(target_ips),
+                'total_hosts': 1,   # Always 1 because batch_size = 1
                 'scan_status': report.findtext('.//scan_run_status', 'N/A'),
                 'task_name': report.findtext('.//task/name', 'N/A'),
                 'overall_severity': report.findtext('.//severity', '0.0')
             }
 
-            # Process host information
+            # Initialize host entry for real IP
+            parsed_data['hosts'][real_ip] = {
+                'ip_address': real_ip,
+                'hostname': None,
+                'mac_address': None,
+                'operating_system': None,
+                'cpe': None,
+                'total_vulnerabilities': 0,
+                'open_ports': {'tcp': [], 'udp': []},
+                'vulnerabilities': {'High': [], 'Medium': [], 'Low': [], 'Log': []},
+                'services': {}
+            }
+
+            host_info = parsed_data['hosts'][real_ip]
+
+            # -------------------------
+            # Parse Host Details
+            # -------------------------
             for host in report.findall('.//host'):
-                ip = host.findtext('ip', '').strip()
-                if ip not in target_ips:
-                    continue
-                # print(f"[*] Processing host IP: {ip}")
 
-                host_info = {
-                    'ip_address': ip,
-                    'hostname': None,
-                    'mac_address': None,
-                    'operating_system': None,
-                    'cpe': None,
-                    'total_vulnerabilities': 0,
-                    'open_ports': {'tcp': [], 'udp': []},
-                    'vulnerabilities': {'High': [], 'Medium': [], 'Low': [], 'Log': []},
-                    'services': {}
-                }
-
+                # Ignore XML host <ip> — OpenVAS may fake it (127.x.x.x)
                 for detail in host.findall('.//detail'):
                     name = detail.findtext('name', '').strip().lower()
                     value = detail.findtext('value', '').strip()
+
                     if not value or value.lower() in ['unknown', '0', 'n/a']:
                         continue
-                        
+
                     if name == 'mac':
                         host_info['mac_address'] = value
                     elif name == 'os':
@@ -579,121 +577,126 @@ class OpenVASScanner:
                         host_info['hostname'] = value
                     elif name == 'tcp_ports':
                         try:
-                            host_info['open_ports']['tcp'] = [int(p.strip()) for p in value.split(',') if p.strip().isdigit()]
-                        except ValueError:
-                            self.logger.warning(f"Failed to parse TCP ports: {value}")
+                            host_info['open_ports']['tcp'] = [
+                                int(p.strip()) for p in value.split(',') if p.strip().isdigit()
+                            ]
+                        except:
+                            pass
                     elif name == 'udp_ports':
                         try:
-                            host_info['open_ports']['udp'] = [int(p.strip()) for p in value.split(',') if p.strip().isdigit()]
-                        except ValueError:
-                            self.logger.warning(f"Failed to parse UDP ports: {value}")
+                            host_info['open_ports']['udp'] = [
+                                int(p.strip()) for p in value.split(',') if p.strip().isdigit()
+                            ]
+                        except:
+                            pass
 
-                if ip not in parsed_data['hosts']:
-                    parsed_data['hosts'][ip] = host_info
-                else:
-                    existing = parsed_data['hosts'][ip]
-                    for key in ['mac_address', 'hostname', 'operating_system', 'cpe']:
-                        if not existing[key] and host_info[key]:
-                            existing[key] = host_info[key]
-                    existing['open_ports']['tcp'].extend(host_info['open_ports']['tcp'])
-                    existing['open_ports']['udp'].extend(host_info['open_ports']['udp'])
-                    existing['open_ports']['tcp'] = list(set(existing['open_ports']['tcp']))
-                    existing['open_ports']['udp'] = list(set(existing['open_ports']['udp']))
-
-            # Process vulnerability results
+            # -------------------------
+            # Parse Vulnerabilities
+            # -------------------------
             for result in report.findall('.//results/result'):
-                host = result.findtext('host', 'N/A')
-                if host not in parsed_data['hosts']:
-                    continue
+
+                # Ignore fake host tag, always use real_ip
+                host = real_ip
 
                 port = result.findtext('port', 'N/A')
                 threat = result.findtext('threat', 'N/A')
-                
+
                 try:
                     severity = float(result.findtext('severity', '0.0'))
-                except (ValueError, TypeError):
+                except:
                     severity = 0.0
-                    
+
                 qod = result.findtext('.//qod/value', 'N/A')
 
                 nvt = result.find('nvt')
-                if nvt is not None:
-                    vuln_data = {
-                        'name': nvt.findtext('name', 'Unknown').strip(),
-                        'summary': result.findtext('description', 'N/A'),
-                        'vulnerability_insight': '',
-                        'affected_software': [],
-                        'impact': {
-                            'cvss_base_score': nvt.findtext('cvss_base', '0.0'),
-                            'cvss_vector': nvt.findtext('cvss_base_vector', 'N/A'),
-                            'risk_factor': threat,
-                            'severity_score': severity
-                        },
-                        'solution': {
-                            'description': 'N/A',
-                            'type': 'N/A',
-                            'effort': 'N/A'
-                        },
-                        'detection': {
-                            'method': nvt.findtext('family', 'N/A'),
-                            'quality': qod,
-                            'details': result.findtext('notes', 'N/A')
-                        },
-                        'port_protocol': port,
-                        'cves': [],
-                        'references': [],
-                        'timestamps': {
-                            'detected': result.findtext('detection_time', 'N/A'),
-                            'creation': nvt.findtext('creation_time', 'N/A'),
-                            'modification': nvt.findtext('modification_time', 'N/A')
-                        }
+                if nvt is None:
+                    continue
+
+                vuln_data = {
+                    'name': nvt.findtext('name', 'Unknown').strip(),
+                    'summary': result.findtext('description', 'N/A'),
+                    'vulnerability_insight': '',
+                    'affected_software': [],
+                    'impact': {
+                        'cvss_base_score': nvt.findtext('cvss_base', '0.0'),
+                        'cvss_vector': nvt.findtext('cvss_base_vector', 'N/A'),
+                        'risk_factor': threat,
+                        'severity_score': severity
+                    },
+                    'solution': {
+                        'description': 'N/A',
+                        'type': 'N/A',
+                        'effort': 'N/A'
+                    },
+                    'detection': {
+                        'method': nvt.findtext('family', 'N/A'),
+                        'quality': qod,
+                        'details': result.findtext('notes', 'N/A')
+                    },
+                    'port_protocol': port,
+                    'cves': [],
+                    'references': [],
+                    'timestamps': {
+                        'detected': result.findtext('detection_time', 'N/A'),
+                        'creation': nvt.findtext('creation_time', 'N/A'),
+                        'modification': nvt.findtext('modification_time', 'N/A')
                     }
+                }
 
-                    refs = nvt.find('refs')
-                    if refs is not None:
-                        for ref in refs.findall('ref'):
-                            ref_type = ref.get('type', '')
-                            ref_id = ref.get('id', '')
-                            if ref_type == 'cve':
-                                vuln_data['cves'].append(ref_id)
-                                parsed_data['summary']['total_cves'].add(ref_id)
-                            vuln_data['references'].append({'type': ref_type, 'id': ref_id})
+                # CVEs and references
+                refs = nvt.find('refs')
+                if refs is not None:
+                    for ref in refs.findall('ref'):
+                        ref_type = ref.get('type', '')
+                        ref_id = ref.get('id', '')
+                        if ref_type == 'cve':
+                            vuln_data['cves'].append(ref_id)
+                            parsed_data['summary']['total_cves'].add(ref_id)
+                        vuln_data['references'].append({'type': ref_type, 'id': ref_id})
 
-                    tags = nvt.findtext('tags', '')
-                    if tags:
-                        try:
-                            tag_dict = {}
-                            for item in tags.split('|'):
-                                if '=' in item:
-                                    k, v = item.split('=', 1)
-                                    tag_dict[k.strip()] = v.strip()
-                            
-                            vuln_data['vulnerability_insight'] = tag_dict.get('insight', '')
-                            vuln_data['affected_software'] = [s.strip() for s in tag_dict.get('affected', '').split(',') if s.strip()]
-                            vuln_data['solution']['description'] = tag_dict.get('solution', 'N/A')
-                            vuln_data['solution']['type'] = tag_dict.get('solution_type', 'N/A')
-                            vuln_data['solution']['effort'] = tag_dict.get('solution_effort', 'N/A')
-                        except Exception as e:
-                            self.logger.warning(f"Failed to parse tags: {e}")
+                # Parse tags (solution, affected, insight etc.)
+                tags = nvt.findtext('tags', '')
+                if tags:
+                    try:
+                        tag_dict = {}
+                        for item in tags.split('|'):
+                            if '=' in item:
+                                k, v = item.split('=', 1)
+                                tag_dict[k.strip()] = v.strip()
 
-                    if threat in parsed_data['hosts'][host]['vulnerabilities']:
-                        parsed_data['hosts'][host]['vulnerabilities'][threat].append(vuln_data)
-                        parsed_data['hosts'][host]['total_vulnerabilities'] += 1
-                        parsed_data['summary']['total_vulnerabilities'] += 1
-                        parsed_data['summary']['by_severity'][threat] += 1
-                        if port != 'N/A':
-                            parsed_data['summary']['by_port'][port] = parsed_data['summary']['by_port'].get(port, 0) + 1
+                        vuln_data['vulnerability_insight'] = tag_dict.get('insight', '')
+                        vuln_data['affected_software'] = [
+                            s.strip() for s in tag_dict.get('affected', '').split(',') if s.strip()
+                        ]
+                        vuln_data['solution']['description'] = tag_dict.get('solution', 'N/A')
+                        vuln_data['solution']['type'] = tag_dict.get('solution_type', 'N/A')
+                        vuln_data['solution']['effort'] = tag_dict.get('solution_effort', 'N/A')
 
+                    except:
+                        pass
+
+                # Add vulnerability to host
+                if threat in host_info['vulnerabilities']:
+                    host_info['vulnerabilities'][threat].append(vuln_data)
+
+                host_info['total_vulnerabilities'] += 1
+                parsed_data['summary']['total_vulnerabilities'] += 1
+                parsed_data['summary']['by_severity'][threat] += 1
+
+                if port != 'N/A':
+                    parsed_data['summary']['by_port'][port] = parsed_data['summary']['by_port'].get(port, 0) + 1
+
+            # Cleanup
+            host_info['open_ports']['tcp'] = sorted(list(set(host_info['open_ports']['tcp'])))
+            host_info['open_ports']['udp'] = sorted(list(set(host_info['open_ports']['udp'])))
             parsed_data['summary']['total_cves'] = sorted(list(parsed_data['summary']['total_cves']))
-            for host_data in parsed_data['hosts'].values():
-                host_data['open_ports']['tcp'] = sorted(host_data['open_ports']['tcp'])
-                host_data['open_ports']['udp'] = sorted(host_data['open_ports']['udp'])
-            
+
             return parsed_data
 
         except Exception as e:
             self.logger.error(f"Error parsing XML report: {e}")
             return None
+
 
 if __name__ == '__main__':
     import time
